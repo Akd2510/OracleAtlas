@@ -179,4 +179,71 @@ renderRoad();renderTerms();renderLesson();renderQuiz();renderModules();renderPro
  <div class="ai-messages" id="aiMessages"><div class="ai-msg bot">Hi! I'm your Oracle ERP study tutor. Ask me to explain a term in EL5 language, walk through a business process, quiz you, or help reason through an error. I can make mistakes, so verify configuration details against official Oracle documentation.</div></div>
  <div class="ai-compose"><div class="ai-quick"><button class="btn small" data-aiq="Explain General Ledger like I'm five, with a story.">Explain GL</button><button class="btn small" data-aiq="Quiz me on Oracle ERP basics, one question at a time.">Quiz me</button><button class="btn small" data-aiq="Explain the Purchase to Pay process with a small company example.">P2P flow</button></div><textarea id="aiInput" placeholder="Ask Atlas anything about ERP…"></textarea><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="ai-status" id="aiStatus">AI needs a secure API connection to be enabled.</span><button class="btn primary" id="aiSend">Send ↑</button></div></div>
 </section>
+<script>
+(() => {
+  const fab = document.getElementById("aiFab");
+  const panel = document.getElementById("aiPanel");
+  const close = document.getElementById("aiClose");
+  const send = document.getElementById("aiSend");
+  const input = document.getElementById("aiInput");
+  const messages = document.getElementById("aiMessages");
+  const status = document.getElementById("aiStatus");
+  if (!fab || !panel || !close || !send || !input || !messages || !status) return;
+
+  function openChat() {
+    panel.classList.add("open");
+    status.textContent = "Ready · Ask your Oracle ERP question.";
+    input.focus();
+  }
+  function addMessage(text, role) {
+    const el = document.createElement("div");
+    el.className = "ai-msg " + (role === "user" ? "user" : "bot");
+    el.textContent = text;
+    messages.appendChild(el);
+    messages.scrollTop = messages.scrollHeight;
+    return el;
+  }
+  fab.addEventListener("click", openChat);
+  close.addEventListener("click", () => panel.classList.remove("open"));
+  document.querySelectorAll("[data-aiq]").forEach(button => {
+    button.addEventListener("click", () => {
+      input.value = button.dataset.aiq || "";
+      input.focus();
+    });
+  });
+  async function sendMessage() {
+    const message = input.value.trim();
+    if (!message || send.disabled) return;
+    addMessage(message, "user");
+    input.value = "";
+    send.disabled = true;
+    status.textContent = "Atlas is thinking…";
+    const loading = addMessage("Thinking…", "bot");
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      loading.textContent = data.answer || "I couldn't generate a response. Please try again.";
+      status.textContent = "Connected · Check important details against Oracle documentation.";
+    } catch (error) {
+      loading.textContent = "I couldn't reach Atlas AI: " + (error.message || "Unknown error") + ". Check the Vercel function logs and OPENAI_API_KEY environment variable.";
+      status.textContent = "Connection issue · See the message above.";
+    } finally {
+      send.disabled = false;
+      messages.scrollTop = messages.scrollHeight;
+    }
+  }
+  send.addEventListener("click", sendMessage);
+  input.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendMessage();
+    }
+  });
+})();
+</script>
 </body></html>
