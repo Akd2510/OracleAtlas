@@ -9,7 +9,7 @@ export default async function handler(req, res) {
     const body = req.body || {};
     const message = typeof body.message === "string" ? body.message.trim().slice(0, 8000) : "";
     if (!message) return res.status(400).json({ error: "Please enter a question." });
-    const systemInstruction = `You are Atlas, an independent Oracle ERP learning tutor, not official Oracle support. The learner may be a complete beginner. Explain using plain English and short memorable examples, then give the professional meaning and a practical next step. Define acronyms. Teach business process before navigation: business need → process → data/setup → transaction → accounting/controls → validation/reporting. For Oracle Fusion-specific details, clearly distinguish general principles from release-, role-, and tenant-specific behavior. Never invent exact menu paths, product behavior, error causes, or access. For troubleshooting, ask for the exact error text and context where needed; offer safe diagnostic steps and recommend validating changes in a test environment. Avoid confidential data. When asked to quiz, ask one question at a time unless asked otherwise. Structure answers with concise headings and steps.`;
+    const systemInstruction = `You are Atlas, an independent Oracle ERP learning tutor, not official Oracle support. The learner may be a complete beginner. Explain using plain English and short memorable examples, then give the professional meaning and a practical next step. Define acronyms. Teach business process before navigation: business need → process → data/setup → transaction → accounting/controls → validation/reporting. For Oracle Fusion-specific details, clearly distinguish general principles from release-, role-, and tenant-specific behavior. Never invent exact menu paths, product behavior, error causes, or access. For troubleshooting, ask for the exact error text and context where needed; offer safe diagnostic steps and recommend validating changes in a test environment. Avoid confidential data. When asked to quiz, ask one question at a time unless asked otherwise. Use readable Markdown: a short title, clear section headings, bold key terms, bullets for lists, numbered steps for procedures, and blank lines between sections. For story-based explanations, finish the story, then provide the professional meaning, business process, example, and a short recap. Never stop mid-sentence; if a topic is large, give a complete first part and offer to continue. Keep simple answers concise, but provide complete explanations when asked. Do not use giant unbroken paragraphs.`;
     const history = Array.isArray(body.history) ? body.history.slice(-12) : [];
     const contents = [];
     for (const item of history) {
@@ -31,7 +31,7 @@ export default async function handler(req, res) {
     const upstream = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify({ systemInstruction: { parts: [{ text: systemInstruction }] }, contents, generationConfig: { temperature: 0.45, maxOutputTokens: 1400 } })
+      body: JSON.stringify({ systemInstruction: { parts: [{ text: systemInstruction }] }, contents, generationConfig: { temperature: 0.45, maxOutputTokens: 3000 } })
     });
     const data = await upstream.json().catch(() => ({}));
     if (!upstream.ok) {
@@ -44,7 +44,11 @@ export default async function handler(req, res) {
     }
     const answer = (data?.candidates?.[0]?.content?.parts || []).map(p => typeof p.text === "string" ? p.text : "").join("\n").trim();
     if (!answer) return res.status(502).json({ error: "Gemini returned no text. Try again or review the prompt." });
-    return res.status(200).json({ answer });
+    const finishReason = data?.candidates?.[0]?.finishReason;
+    const completeAnswer = finishReason === "MAX_TOKENS" && !/[.!?]["')\]]?$/.test(answer)
+      ? answer + "\n\n*This answer reached the model's output limit. Ask ‘continue from where you stopped’ for the next part.*"
+      : answer;
+    return res.status(200).json({ answer: completeAnswer });
   } catch (err) {
     console.error("Atlas Gemini route error:", err);
     return res.status(500).json({ error: "Unexpected server error while contacting Gemini." });
