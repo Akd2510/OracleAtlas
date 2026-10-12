@@ -1,4 +1,4 @@
-# Oracle Atlas 3.0 — AI-enabled Oracle ERP learning hub
+# Oracle Atlas — AI-enabled Oracle ERP learning hub
 
 A static, browser-based learning website with a secure Vercel serverless AI tutor.
 
