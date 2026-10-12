@@ -3,42 +3,50 @@ export default async function handler(req, res) {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Use POST for chat requests." });
   }
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) return res.status(503).json({ error: "AI is not configured yet. Add OPENAI_API_KEY in Vercel Environment Variables, then redeploy." });
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(503).json({ error: "Gemini is not configured. Add GEMINI_API_KEY in Vercel Environment Variables and redeploy." });
   try {
     const body = req.body || {};
-    const message = typeof body.message === "string" ? body.message.slice(0, 8000) : "";
-    if (!message.trim()) return res.status(400).json({ error: "Please enter a question." });
-    const history = Array.isArray(body.history) ? body.history.slice(-10) : [];
-    const input = history.map(item => ({
-      role: item.role === "assistant" ? "assistant" : "user",
-      content: String(item.content || "").slice(0, 8000)
-    }));
-    // Keep the current message in the submitted history exactly once.
-    if (!input.length || input[input.length - 1].content !== message) input.push({ role: "user", content: message });
-    const instructions = `You are Atlas, a patient and rigorous Oracle ERP learning tutor. The learner may be a complete beginner and wants EL5 explanations with memorable, respectful stories. Teach in layers: (1) short plain-English answer, (2) a small story/example, (3) the professional Oracle/business meaning, (4) practical example or steps, (5) a quick check-for-understanding question when useful. Define acronyms on first use. Explain why a setup item exists, what it depends on, and what can break if it is wrong. Distinguish general ERP/accounting knowledge from Oracle Fusion-specific behavior and from assumptions about the user's tenant. Never invent menu paths, error-code root causes, product features, certifications, or tenant access. For configuration and troubleshooting, ask for exact error text, page/field, release/environment, and relevant context if necessary. Treat any step-by-step production changes cautiously: suggest checking dependencies, using a test environment, and verifying with official Oracle documentation. Do not claim to be official Oracle support. Encourage ethical, honest job preparation. Use clear headings and concise bullets; no unexplained jargon.`;
-    const upstream = await fetch("https://api.openai.com/v1/responses", {
+    const message = typeof body.message === "string" ? body.message.trim().slice(0, 8000) : "";
+    if (!message) return res.status(400).json({ error: "Please enter a question." });
+    const systemInstruction = `You are Atlas, an independent Oracle ERP learning tutor, not official Oracle support. The learner may be a complete beginner. Explain using plain English and short memorable examples, then give the professional meaning and a practical next step. Define acronyms. Teach business process before navigation: business need → process → data/setup → transaction → accounting/controls → validation/reporting. For Oracle Fusion-specific details, clearly distinguish general principles from release-, role-, and tenant-specific behavior. Never invent exact menu paths, product behavior, error causes, or access. For troubleshooting, ask for the exact error text and context where needed; offer safe diagnostic steps and recommend validating changes in a test environment. Avoid confidential data. When asked to quiz, ask one question at a time unless asked otherwise. Structure answers with concise headings and steps.`;
+    const history = Array.isArray(body.history) ? body.history.slice(-12) : [];
+    const contents = [];
+    for (const item of history) {
+      if (!item || typeof item.content !== "string") continue;
+      const role = item.role === "assistant" ? "model" : "user";
+      const content = item.content.trim().slice(0, 6000);
+      if (!content) continue;
+      // Gemini requires alternating roles. Skip duplicate current message, appended below.
+      if (role === "user" && content === message && item === history[history.length - 1]) continue;
+      const previous = contents[contents.length - 1];
+      if (previous && previous.role === role) previous.parts[0].text += "\n\n" + content;
+      else contents.push({ role, parts: [{ text: content }] });
+    }
+    if (!contents.length || contents[contents.length - 1].role !== "user" || contents[contents.length - 1].parts[0].text !== message) {
+      contents.push({ role: "user", parts: [{ text: message }] });
+    }
+    const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    const upstream = await fetch(endpoint, {
       method: "POST",
-      headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-        instructions,
-        input,
-        max_output_tokens: 1200
-      })
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({ systemInstruction: { parts: [{ text: systemInstruction }] }, contents, generationConfig: { temperature: 0.45, maxOutputTokens: 1400 } })
     });
-    const data = await upstream.json();
+    const data = await upstream.json().catch(() => ({}));
     if (!upstream.ok) {
-      console.error("OpenAI API error:", data.error?.message || upstream.status);
-      return res.status(502).json({ error: "The AI provider request failed. Check the server logs, model availability, and API billing/configuration." });
+      const detail = data?.error?.message || `HTTP ${upstream.status}`;
+      console.error("Gemini API error:", detail);
+      if (upstream.status === 400 || upstream.status === 404) return res.status(502).json({ error: "Gemini rejected the request or model. Check GEMINI_MODEL and choose a model available to your API key. See Vercel function logs." });
+      if (upstream.status === 401 || upstream.status === 403) return res.status(502).json({ error: "Gemini rejected the API key or its permissions. Check GEMINI_API_KEY in Vercel." });
+      if (upstream.status === 429) return res.status(429).json({ error: "Gemini rate limit or quota reached. Check Google AI Studio usage and try again later." });
+      return res.status(502).json({ error: "Gemini could not complete the request. Check Vercel function logs and Google AI Studio usage." });
     }
-    let answer = data.output_text;
-    if (!answer && Array.isArray(data.output)) {
-      answer = data.output.flatMap(o => o.content || []).filter(c => c.type === "output_text").map(c => c.text).join("\n");
-    }
-    return res.status(200).json({ answer: answer || "I couldn't generate a response. Please try again." });
-  } catch (error) {
-    console.error("Atlas chat route error:", error);
-    return res.status(500).json({ error: "Unexpected server error while contacting the AI tutor." });
+    const answer = (data?.candidates?.[0]?.content?.parts || []).map(p => typeof p.text === "string" ? p.text : "").join("\n").trim();
+    if (!answer) return res.status(502).json({ error: "Gemini returned no text. Try again or review the prompt." });
+    return res.status(200).json({ answer });
+  } catch (err) {
+    console.error("Atlas Gemini route error:", err);
+    return res.status(500).json({ error: "Unexpected server error while contacting Gemini." });
   }
 }
